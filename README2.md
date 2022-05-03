@@ -10,7 +10,7 @@ The repository is structured by technology and the content type.
 
 ## Support
 
-Please contact your designated Customer Engineer for any issues with content within this repository and we will work towards updating the content as needed.  We welcome all feedback to better the service.
+Please contact your designated Customer Engineer for any feedback and issues with content within this repository and we will work towards updating the content as needed.  We welcome all feedback to better the service.
 
 ## Mission
 
