@@ -1,3 +1,5 @@
+![Microsoft logo](./MicrosoftLogo.png "Microsoft logo")
+
 # Welcome to Support for Mission Critical (SfMC)
 
 This repository is an open source project to share SfMC persistant scripts and content to support our workloads and processes.  Most of the content is tailored for SfMC customers but maybe helpful for everyone.  
@@ -9,6 +11,10 @@ The repository is structureed by technology and the content type.
 ## Support
 
 Please contact your designated Customer Engineer for any issues with content withen this repository and we will work on correcting and updatign the content as need.  We welcome all feedback to better the service.
+
+## Mission
+
+To empower every person and every organization on the planet to achieve more.
 
 ## Contributing
 
