@@ -1,4 +1,4 @@
-![Microsoft logo](./MicrosoftLogo.png "Microsoft logo")
+![Microsoft logo](./MicrosoftLogo_765x342.png "Microsoft logo")
 
 # Welcome to Support for Mission Critical (SfMC)
 
