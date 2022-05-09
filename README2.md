@@ -6,7 +6,7 @@ This repository is an open-source project to share SfMC persistent scripts and c
 
 ## Navigation
 The repository is structured by technology and the content type.  
-![SfMC GitHub Structure](./GitHubStructure.png "SfMC GitHub Structure")
+![SfMC GitHub Structure](./GitHubStructure_854x306.png "SfMC GitHub Structure")
 
 ## Support
 
