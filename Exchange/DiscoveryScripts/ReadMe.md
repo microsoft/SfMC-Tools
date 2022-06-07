@@ -5,10 +5,11 @@ Instructions for using the Exchange and Exchange Online Discovery Scripts.
 <br>
 
 Perquisites:
-1. Must be run from a domain joined Windows 10 machine due to a known issue with PowerShell on Windows Server.
-2. You will need a Global Admin Account to run the EXO Discovery script.
-3. You will need an Exchange admin account to run the on prem Exchange discover script.
-4. If you are running this for Exchange Online as well, you need to install the Exchange Online Management module by following this process:
+1. Must be run from a domain joined Windows 10 machine due to a known issue with PowerShell on Windows Server, we recommend to run them on a jump box and not on an Exchange Server,
+2. Requires at least PS v5,
+3. You will need a Global Admin Account to run the EXO Discovery script.
+4. You will need an Exchange admin account to run the on prem Exchange discover script.
+5. If you are running this for Exchange Online as well, you need to install the Exchange Online Management module by following this process:
 	a. Open Powershell as an admin and run "Install-Module -Name ExchangeOnlineManagement" . Answer Yes to any prompts.
 	b. Next, run "Import-Module ExchangeOnlineManagement" . Answer Yes to any prompts.
 	
