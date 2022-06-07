@@ -2,6 +2,8 @@ Greetings,
 
 Instructions for using the Exchange and Exchange Online Discovery Scripts.
 
+<br>
+
 Perquisites:
 1. Must be run from a domain joined Windows 10 machine due to a known issue with PowerShell on Windows Server.
 2. You will need a Global Admin Account to run the EXO Discovery script.
@@ -10,6 +12,7 @@ Perquisites:
 	a. Open Powershell as an admin and run "Install-Module -Name ExchangeOnlineManagement" . Answer Yes to any prompts.
 	b. Next, run "Import-Module ExchangeOnlineManagement" . Answer Yes to any prompts.
 	
+<br>
 
 Procedure:
 Create a folder on the root of your C: drive called Discovery. 
@@ -34,7 +37,9 @@ SfMC-EXODiscovery.ps1 -UserPrincipalName GlobalAdmin@YourDomain.com -OutputPath 
 
 The above command will create a .ZIP file in the EXOResults folder. Please upload The files here: 
 
-
+<br>
+<br>
+<br>
 
 
 Here are some examples of command lines for the Exchange script. 
