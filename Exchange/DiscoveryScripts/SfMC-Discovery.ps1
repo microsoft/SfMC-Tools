@@ -1,10 +1,10 @@
-<#//***********************************************************************
+﻿<#//***********************************************************************
 //
 // SfMC-Discovery.ps1
-// Modified 18 November 2022
+// Modified 10 May 2023
 // Last Modifier:  Jim Martin
 // Project Owner:  Jim Martin
-// .VERSION 20221118.1228
+// .VERSION 20230510.1045
 //
 // .SYNOPSIS
 //  Collect Exchange configuration via PowerShell
@@ -44,6 +44,7 @@
 // 20220823.1657 - Logging, option to include HealthChecker (no longer mandatory), invoke-command only run remotely
 // 20220908.1039 - Allow run from Exchange server using logged on user credentials
 // 20221102.0949 - Allow run from Exchange server on Windows Server 2012 R2
+// 20230510.1045 - Bug fix for timespan
 //
 //***********************************************************************
 //
@@ -333,6 +334,46 @@ function Check-RunningFromExchangeServer {
     }
     return $isExchangeServer
 }
+function Check-OrgCollectionStarted{
+    Write-Verbose "Checking if Exchange organization data collection started on $($ExchangeServer)."
+    $StartCheck = Invoke-ScriptBlockHandler -ScriptBlock {Get-EventLog -LogName Application -Source "MSExchange ADAccess" -InstanceId 1125 -After (Get-Date -Date (Get-Date).AddMinutes(-2) -Format "M/d/yyyy HH:mm") -ErrorAction Ignore} -ComputerName $ExchangeServer -Credential $creds
+    if($StartCheck -notlike $null) {
+        Write-Verbose "Exchange organization data collection has started on $($ExchangeServer)."
+    }
+    else {
+        Write-Verbose "Exchange organization data collection failed to start on $($ExchangeServer)."
+        Write-VerboseLog "Checking for Exchange organization scheduled task on $($ExchangeServer)."
+        $OrgTask = Invoke-ScriptBlockHandler -ScriptBlock {Get-ScheduledTask ExchangeOrgDiscovery -ErrorAction Ignore -TaskPath \ } -ComputerName $ExchangeServer -Credential $creds
+        if($OrgTask -like $null) {
+            Write-Verbose "Failed to create scheduled task on $($ExchangeServer)."
+        }
+        else {
+            Write-Verbose "Exchange organization scheduled task found on $($ExchangeServer)."
+            Write-Verbose "Attempting to start the Exchange organization scheduled task on $($ExchangeServer)."
+            Invoke-ScriptBlockHandler -ScriptBlock {Start-ScheduledTask ExchangeOrgDiscovery -TaskPath \ -ErrorAction Ignore } -ComputerName $ExchangeServer -Credential $creds
+        }
+    }        
+}
+function Check-ServerCollectionStarted{
+    Write-Verbose "Checking if Exchange server data collection started on $($ExchangeServer)."
+    $StartCheck = Invoke-ScriptBlockHandler -ScriptBlock {Get-EventLog -LogName Application -Source "MSExchange ADAccess" -InstanceId 1031 -After (Get-Date -Date (Get-Date).AddMinutes(-2) -Format "M/d/yyyy HH:mm") -ErrorAction Ignore} -ComputerName $s.Fqdn -Credential $creds
+    if($StartCheck -notlike $null) {
+        Write-VerboseLog "Exchange server data collection has started on $($s.Name)."
+    }
+    else {
+        Write-VerboseLog "Exchange server data collection failed to start on $($s.Name)."
+        Write-VerboseLog "Checking for Exchange server scheduled task on $($s.Name)."
+        $ServerTask = Invoke-ScriptBlockHandler -ScriptBlock {Get-ScheduledTask ExchangeServerDiscovery -ErrorAction Ignore -TaskPath \ } -ComputerName $s.Fqdn -Credential $creds
+        if($ServerTask -like $null) {
+            Write-Verbose "Failed to create scheduled task on $($s.Name)."
+        }
+        else {
+            Write-Verbose "Exchange server scheduled task found on $($s.Name)."
+            Write-Verbose "Attempting to start the Exchange server scheduled task on $($s.Name)."
+            Invoke-ScriptBlockHandler -ScriptBlock {Start-ScheduledTask ExchangeServerDiscovery -TaskPath \ -ErrorAction Ignore } -ComputerName $s.Fqdn -Credential $creds
+        }
+    }        
+}
 
 Add-Type -AssemblyName System.Windows.Forms
 $Script:Logger = Get-NewLoggerInstance -LogName "SfMCDiscovery-$((Get-Date).ToString("yyyyMMddhhmmss"))-Debug" -AppendDateTimeToFileName $false -ErrorAction SilentlyContinue
@@ -340,8 +381,9 @@ $Script:Logger = Get-NewLoggerInstance -LogName "SfMCDiscovery-$((Get-Date).ToSt
 #region SfMCBanner
 Write-Host " "
 Write-Host " "
-Write-Host -ForegroundColor Cyan "==============================================================================="
+Write-Host -ForegroundColor Cyan "=====================SfMC Discovery version 20230421.1909====================="
 Write-Host " "
+Write-Host -ForegroundColor Cyan "  "
 Write-Host -ForegroundColor Cyan " The SfMC Email Discovery process is about to begin gathering data. "
 Write-Host -ForegroundColor Cyan " It will take some time to complete depending on the size of your environment. "
 Write-Host " "
@@ -358,8 +400,8 @@ $ExchangeServerDiscovery = {
     $scriptFile = ".\Get-ExchangeServerDiscovery.ps1"
     $Sta = New-ScheduledTaskAction -Execute "Powershell.exe" -WorkingDirectory $startInDirectory  -Argument "-ExecutionPolicy Unrestricted -WindowStyle Hidden -Command `"& $scriptFile -HealthChecker:`$$HealthChecker`""
     $STPrin = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount
-    $Stt = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMilliseconds(5000)
-    Register-ScheduledTask ExchangeServerDiscovery -Action $Sta -Principal $STPrin -Trigger $Stt
+    Register-ScheduledTask ExchangeServerDiscovery -Action $Sta -Principal $STPrin
+    Start-ScheduledTask ExchangeServerDiscovery -ErrorAction Ignore
 }
 ## Script block to initiate Exchange organization discovery
 $ExchangeOrgDiscovery = {
@@ -368,8 +410,8 @@ $ExchangeOrgDiscovery = {
     $scriptFile = "`"$scriptFile`""
     $Sta = New-ScheduledTaskAction -Execute "Powershell.exe" -Argument "-ExecutionPolicy Unrestricted -WindowStyle Hidden -file $scriptFile"
     $STPrin = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount
-    $Stt = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMilliseconds(5000)
-    Register-ScheduledTask ExchangeOrgDiscovery -Action $Sta -Principal $STPrin -Trigger $Stt
+    Register-ScheduledTask ExchangeOrgDiscovery -Action $Sta -Principal $STPrin
+    Start-ScheduledTask ExchangeOrgDiscovery -ErrorAction Ignore
 }
 #endregion
 
@@ -412,7 +454,7 @@ if($HealthChecker -and $ServerSettings) {
     if(Get-Item $ScriptPath\HealthChecker.ps1 -ErrorAction Ignore) {
         $HCPresent = $true
     } else {
-    $HCPresent = $false
+        $HCPresent = $false
     }
     try { Invoke-WebRequest -Uri "https://github.com/microsoft/CSS-Exchange/releases/latest/download/HealthChecker.ps1" -OutFile "$ScriptPath\HealthChecker.ps1"
     }
@@ -605,12 +647,14 @@ Write-Host -ForegroundColor Cyan "Collecting data now, please be patient. This w
 #region GetExchOrgSettings
 ## Collect Exchange organization settings
 if($OrgSettings) {
+    $OrgStartTime = Get-Date
     Write-Host -ForegroundColor Cyan "Starting data collection for Exchange organization settings..."
     ## Copy the discovery script to the Exchange server
     if($isExchangeServer) {
         Copy-Item "$ScriptPath\Get-ExchangeOrgDiscovery.ps1" -Destination "$env:ExchangeInstallPath\Scripts" -Force
         Unblock-File -Path "$env:ExchangeInstallPath\Scripts\Get-ExchangeOrgDiscovery.ps1" -Confirm:$false
         Invoke-ScriptBlockHandler -ScriptBlock $ExchangeOrgDiscovery -ComputerName $ComputerName | Out-Null
+        Check-OrgCollectionStarted
     }
     else {
         $s = Get-ExchangeServer $ExchangeServer
@@ -626,14 +670,16 @@ if($OrgSettings) {
                 $SearcherResult| ForEach-Object { [string]$exchInstallPath = $exchInstallPath+[System.Text.Encoding]::ASCII.GetString($_) }
             }
             else {$exchInstallPath = $SearcherResult}
+        Write-Verbose "Found install path for $ExchangeServer`: $SearcherResult"
         $orgResultPath = $exchInstallPath
         $OrgSession = New-PSSession -ComputerName $ExchangeServer -Credential $creds -Name SfMCOrgDiscovery -SessionOption $SessionOption
         Copy-Item "$ScriptPath\Get-ExchangeOrgDiscovery.ps1" -Destination "$exchInstallPath\Scripts" -Force -ToSession $OrgSession -ErrorAction Ignore
         ## Initiate the data collection on the Exchange server
-        Write-Verbose "Starting data collection for Exchange organization settings."
-        Invoke-ScriptBlockHandler -ScriptBlock $ExchangeOrgDiscovery -ComputerName $ExchangeServer -Credential $creds | Out-Null #-ArgumentList $creds 
         Write-Verbose "Unblocking the PowerShell script."
-        Invoke-ScriptBlockHandler -ScriptBlock {Unblock-File -Path "$env:ExchangeInstallPath\Scripts\Get-ExchangeOrgDiscovery.ps1" -Confirm:$false} -Credential $creds -ComputerName $ExchangeServer # -Session $OrgSession
+        Invoke-ScriptBlockHandler -ScriptBlock {Unblock-File -Path "$env:ExchangeInstallPath\Scripts\Get-ExchangeOrgDiscovery.ps1" -Confirm:$false} -Credential $creds -ComputerName $ExchangeServer
+        Write-Verbose "Starting data collection for Exchange organization settings."
+        Invoke-ScriptBlockHandler -ScriptBlock $ExchangeOrgDiscovery -ComputerName $ExchangeServer -Credential $creds | Out-Null
+        Check-OrgCollectionStarted
         Remove-PSSession -Name SfMCOrgDiscovery -ErrorAction Ignore
     }
 }       
@@ -642,6 +688,7 @@ if($OrgSettings) {
 #region GetExchServerSettings
 $ServerSettingsTimer = New-Object -TypeName System.Diagnostics.Stopwatch
 $ServerSettingsTimer.Start()
+$ServerStart = Get-Date
 if($ServerSettings) {
     Write-Host "Starting data collection on the Exchange servers..." -ForegroundColor Cyan
     $sAttempted = 0
@@ -654,7 +701,6 @@ if($ServerSettings) {
         Write-Progress -Activity "Exchange Discovery Assessment" -Status "Starting data collection on $($s.Name).....$PercentComplete% complete" -PercentComplete $PercentComplete
         if(Test-Connection -ComputerName $s.Fqdn -Count 2 -ErrorAction Ignore) {
             Write-Verbose "Getting Exchange install path for $($s.Name)."
-            #$s = Get-ExchangeServer $s.DistinguishedName
             $Filter = "(&(name=$($s.Name))(ObjectClass=msExchExchangeServer))"
             [string]$RootOU = $s.DistinguishedName
             $Searcher = New-Object DirectoryServices.DirectorySearcher
@@ -667,6 +713,7 @@ if($ServerSettings) {
                 $SearcherResult| ForEach-Object { [string]$exchInstallPath = $exchInstallPath+[System.Text.Encoding]::ASCII.GetString($_) }
             }
             else {$exchInstallPath = $SearcherResult}
+            Write-Verbose "Found install path for $($s.Name)`: $SearcherResult"
             #$exchInstallPath = (Get-ADObject -Filter "name -eq '$($s.Name)' -and ObjectClass -eq 'msExchExchangeServer'" -SearchBase $s.DistinguishedName -Properties msExchInstallPath -Server $s.OriginatingServer).msExchInstallPath
             ## Create an array to store paths for data retrieval
             if($exchInstallPath -notlike $null) {
@@ -680,6 +727,7 @@ if($ServerSettings) {
                     $exchInstallPath = "\\$($s.Fqdn)\$exchInstallPath"
                     try {
                         Copy-Item "$ScriptPath\Get-ExchangeServerDiscovery.ps1" -Destination "$exchInstallPath\Scripts" -Force -ErrorAction Ignore
+                        Write-Verbose "Get-ExchangeServerDiscovery script successfully copied to $s"
                     }
                     catch {
                         Write-Verbose "Failed to copy Get-ExchangeServerDiscovery script to $s"
@@ -687,6 +735,7 @@ if($ServerSettings) {
                     if($HealthChecker) { 
                         try {
                             Copy-Item "$ScriptPath\HealthChecker.ps1" -Destination "$exchInstallPath\Scripts" -Force -ErrorAction Ignore
+                            Write-Verbose "HealthChecker script successfully copied to $s"
                         }
                         catch {
                             Write-Verbose "Failed to copy HealthChecker script to $s"
@@ -698,11 +747,17 @@ if($ServerSettings) {
                     if($ServerSession) {
                         try {
                             Copy-Item "$ScriptPath\Get-ExchangeServerDiscovery.ps1" -Destination "$exchInstallPath\Scripts" -Force -ToSession $ServerSession -ErrorAction Ignore
+                            Write-Verbose "Get-ExchangeServerDiscovery script successfully copied to $s"
+                            Write-Verbose "Unblocking the script file on server $($s.Name)."
+                            Invoke-ScriptBlockHandler -ScriptBlock {Unblock-File -Path "$env:ExchangeInstallPath\Scripts\Get-ExchangeServerDiscovery.ps1" -Confirm:$false} -Credential $creds -ComputerName $s.fqdn -IsExchangeServer $isExchangeServer
                         }
                         catch {
                             Write-Verbose "Failed to copy Get-ExchangeServerDiscovery to $s"
                         }
-                        if($HealthChecker) { Copy-Item "$ScriptPath\HealthChecker.ps1" -Destination "$exchInstallPath\Scripts" -Force -ToSession $ServerSession } #-ErrorAction Ignore }
+                        if($HealthChecker) { 
+                            Copy-Item "$ScriptPath\HealthChecker.ps1" -Destination "$exchInstallPath\Scripts" -Force -ToSession $ServerSession 
+                            Write-Verbose "HealthChecker script successfully copied to $s"
+                        }
                         Remove-PSSession -Name SfMCSrvDis -ErrorAction Ignore
                     }
                     else {
@@ -712,9 +767,7 @@ if($ServerSettings) {
                 ## Initiate the data collection on the Exchange server
                 Write-Verbose "Starting data collection on the Exchange server $($s.Name)."
                 Invoke-ScriptBlockHandler -ScriptBlock $ExchangeServerDiscovery -ComputerName $s.Fqdn -ArgumentList $HealthChecker -Credential $creds -IsExchangeServer $isExchangeServer | Out-Null
-                Write-Verbose "Unblocking the script file on server $($s.Name)."
-                Invoke-ScriptBlockHandler -ScriptBlock {Unblock-File -Path "$env:ExchangeInstallPath\Scripts\Get-ExchangeServerDiscovery.ps1" -Confirm:$false} -Credential $creds -ComputerName $s.fqdn -IsExchangeServer $isExchangeServer
-                        
+                Check-ServerCollectionStarted
             }
             else {
                 Out-File $OutputPath\FailedServers.txt -InputObject "Unable to determine the Exchange install path on $s" -Append
@@ -728,24 +781,6 @@ if($ServerSettings) {
 }
 #endregion
 
-#region PauseForDataCollection
-## Wait 5 minutes from the start of script before attempting to retrieve the data
-$ServerSettingsTimer.Stop()
-$ServerRunTime = $ServerSettingsTimer.Elapsed.TotalSeconds
-if($ServerRunTime -lt 300) {
-    $TimeToWait = 300 - $ServerRunTime
-    if($TimeToWait -gt 1) {
-        $TimeRemaining = [math]::Round($TimeToWait)
-        Write-Verbose "Waiting $TimeRemaining before attempting data retrieval."
-        while($TimeRemaining -gt 0) {
-            Write-Progress -Activity "Exchange Discovery Assessment" -Status "Waiting for data collection to complete before attempting to retrive data... $TimeRemaining seconds remaining" -PercentComplete ((($TimeToWait-$TimeRemaining)/$TimeToWait)*100)
-            Start-Sleep -Seconds 1
-            $TimeRemaining = $TimeRemaining - 1
-        }
-    }
-}
-#endregion
-
 #region CollectOrgResults
 if($OrgSettings) {
     [int]$OrgResultsAttempt = 0
@@ -755,39 +790,74 @@ if($OrgSettings) {
         $OrgResultsAttempt++
         $sourcePath = $orgResultPath+"Logging\SfMC Discovery"
         if($isExchangeServer) {
-             if(Get-Item "$env:ExchangeInstallPath\Logging\SfMC Discovery\*OrgSettings*.zip" -ErrorAction Ignore) {
-                Write-Verbose "Attempting to copy Exchange org results to output location."
-                Copy-Item "$env:ExchangeInstallPath\Logging\SfMC Discovery\*OrgSettings*.zip" -Destination $OutputPath -Force -ErrorAction Ignore
-                Write-Verbose "Results found for Exchange organization settings."
-                Write-Host "FOUND" -ForegroundColor White
-                $OrgResultsFound = $true
-             }
+            #Check the event log to see if data collection completed
+            Write-Verbose "Checking if Exchange organization script completed on $($ExchangeServer)."
+            $EndTime = Get-Date
+            $TimeSpanMinutes = (New-TimeSpan -Start ($EndTime) -End $ServerStart).Minutes
+            $TimeSpanHours = (New-TimeSpan -Start ($EndTime) -End $ServerStart).Hours
+            $TimeSpan = ($TimeSpanHours*60) + $TimeSpanMinutes
+            $orgCompleted = Invoke-ScriptBlockHandler -ScriptBlock {param($NumberOfMinutes);Get-EventLog -LogName Application -Source "MSExchange ADAccess" -InstanceId 1007 -After (Get-Date -Date (Get-Date).AddMinutes($NumberOfMinutes) -Format "M/d/yyyy HH:mm") -ErrorAction Ignore} -ComputerName $ExchangeServer -Credential $creds -ArgumentList $TimeSpan -IsExchangeServer:$true
+            if($orgCompleted -notlike $null) {
+                Write-Verbose "Exchange organization script completed on $($ExchangeServer)."
+                Write-Verbose "Checking for Exchange organization results on $($ExchangeServer)."
+                if(Get-Item "$env:ExchangeInstallPath\Logging\SfMC Discovery\*OrgSettings*.zip" -ErrorAction Ignore) {
+                    Write-Verbose "Exchange organization results found on $($ExchangeServer)."
+                    Write-Verbose "Attempting to copy Exchange org results to output location."
+                    Copy-Item "$env:ExchangeInstallPath\Logging\SfMC Discovery\*OrgSettings*.zip" -Destination $OutputPath -Force -ErrorAction Ignore
+                    Write-Host "FOUND" -ForegroundColor White
+                    $OrgResultsFound = $true
+                }
+                else{
+                    Write-Verbose "Exchange organization results not found on $($ExchangeServer)."
+                }
+            }
+            else {
+                Write-Verbose "Exchange organization script has not completed on $($ExchangeServer)."
+            }
         }
         else {
-            $Session = New-PSSession -ComputerName $ExchangeServer -Credential $creds -Name OrgResults -SessionOption $SessionOption
-            Write-Verbose "Attempting to located Exchange organization results."
-            $orgResult = Invoke-ScriptBlockHandler -ScriptBlock {$orgFile = (Get-Item "$env:ExchangeInstallPath\Logging\SfMC Discovery\*OrgSettings*.zip").FullName; return $orgFile} -ComputerName $ExchangeServer -Credential $creds
-        
-            if($orgResult -notlike $null ) {
-                Write-Verbose "Attempting to copy Exchange org results to output location."
-                Copy-Item $orgResult -Destination $OutputPath -Force -FromSession $Session -ErrorAction Ignore
-                Write-Verbose "Verifying Exchange org results were received."
-                if(Get-Item $OutputPath\*OrgSettings* -ErrorAction Ignore) { 
-                    Write-Host "FOUND" -ForegroundColor White
-                    Write-Verbose "Results found for Exchange organization settings."
-                    $OrgResultsFound = $true
-                    Write-Verbose "Removing scheduled task for Exchange org discovery."
-                    Invoke-ScriptBlockHandler -ScriptBlock {Unregister-ScheduledTask -TaskName ExchangeOrgDiscovery -Confirm:$False} -ComputerName $ExchangeServer -Credential $creds
-                    Remove-PSSession -Name OrgResults -ErrorAction Ignore -Confirm:$False
-                }                
-                else {
-                    Write-Verbose "Copy of Exchange organization results failed."
+            #Check the event log to see if data collection completed
+            Write-Verbose "Checking if Exchange organization script completed on $($ExchangeServer)."
+            $EndTime = Get-Date
+            $TimeSpanMinutes = (New-TimeSpan -Start ($EndTime) -End $ServerStart).Minutes
+            $TimeSpanHours = (New-TimeSpan -Start ($EndTime) -End $ServerStart).Hours
+            $TimeSpan = ($TimeSpanHours*60) + $TimeSpanMinutes
+            #$TimeSpan = (New-TimeSpan -Start (Get-Date) -End $ServerStart).Minutes
+            $orgCompleted = Invoke-ScriptBlockHandler -ScriptBlock {param($NumberOfMinutes);Get-EventLog -LogName Application -Source "MSExchange ADAccess" -InstanceId 1007 -After (Get-Date -Date (Get-Date).AddMinutes($NumberOfMinutes) -Format "M/d/yyyy HH:mm") -ErrorAction Ignore} -ComputerName $ExchangeServer -Credential $creds -ArgumentList $TimeSpan
+            if($orgCompleted -notlike $null) {
+                #Check for resulting zip file
+                Write-Verbose "Exchange organization script completed on $($ExchangeServer)."
+                Write-Verbose "Checking for Exchange organization results on $($ExchangeServer)."
+                $orgResult = Invoke-ScriptBlockHandler -ScriptBlock {$orgFile = (Get-Item "$env:ExchangeInstallPath\Logging\SfMC Discovery\*OrgSettings*.zip").FullName; return $orgFile} -ComputerName $ExchangeServer -Credential $creds
+                if($orgResult -notlike $null ) {
+                    $Session = New-PSSession -ComputerName $ExchangeServer -Credential $creds -Name OrgResults -SessionOption $SessionOption
+                    Write-Verbose "Attempting to copy Exchange organization results from $($ExchangeServer) to output location."
+                    Copy-Item $orgResult -Destination $OutputPath -Force -FromSession $Session -ErrorAction Ignore
+                    Write-Verbose "Verifying Exchange org results were received."
+                    if(Get-Item $OutputPath\*OrgSettings* -ErrorAction Ignore) { 
+                        Write-Host "FOUND" -ForegroundColor White
+                        Write-Verbose "Results found for Exchange organization settings."
+                        $OrgResultsFound = $true
+                        Write-Verbose "Removing scheduled task for Exchange org discovery."
+                        Invoke-ScriptBlockHandler -ScriptBlock {Unregister-ScheduledTask -TaskName ExchangeOrgDiscovery -Confirm:$False} -ComputerName $ExchangeServer -Credential $creds
+                        Remove-PSSession -Name OrgResults -ErrorAction Ignore -Confirm:$False
+                    }                
+                    else {
+                        Write-Verbose "Copy of Exchange organization results failed."
+                    }
                 }
+                else {
+                    Write-Verbose "Exchange organization results were not found on $($ExchangeServer)."
+                }
+            }
+            else {
+                Write-Verbose "Exchange organization script did not complete on $($ExchangeServer)."
             }
         }
         if($OrgResultsFound -eq $false) {
             Write-Verbose "Results for the Exchange organization discovery were not found."
             Write-Host "NOT FOUND" -ForegroundColor Red
+            Write-Host "Attempting to retrieve Exchange organization settings..." -ForegroundColor Cyan -NoNewline
             ## Wait x minutes before attempting to retrieve the data
             $TimeToWait = 120
             $TimeRemaining = $TimeToWait
@@ -816,13 +886,12 @@ if($ServerSettings){
     ## Attempt to retrieve the data multiple times
     while($ServerResultsAttempt -lt 4 -and $ServerResultsFound -eq $false) {
         $ServersNotFound = New-Object System.Collections.ArrayList
-
         ## Check for results and retrieve if missing
         [int]$sAttempted = 0
         Write-Verbose "Attempting to retrieve Exchange server setting results."
         Write-Host "Attempting to retrieve Exchange server settings..." -ForegroundColor Cyan -NoNewline
         foreach($s in $ExchangeServers) {
-                $CustomObject = New-Object -TypeName psobject
+            $CustomObject = New-Object -TypeName psobject
             $serverName = $s.ServerName
             $NetBIOSName= $ServerName.Substring(0, $ServerName.IndexOf("."))
             ## Check if server results have been received
@@ -840,34 +909,46 @@ if($ServerSettings){
                     $Session = New-PSSession -ComputerName $serverName -Credential $creds -Name ServerResults -SessionOption $SessionOption
                     $params.Add("FromSession",$Session) | Out-Null
                 }
-                Write-Verbose "Attempting to retrieve results from $($serverName)."
-                $serverResult = Invoke-ScriptBlockHandler -ScriptBlock {$serverFile = (Get-Item "$env:ExchangeInstallPath\Logging\SfMC Discovery\$env:COMPUTERNAME*.zip").FullName; return $serverFile} -ComputerName $serverName -Credential $creds -IsExchangeServer $isExchangeServer
-                if($serverResult -notlike $null) {
-                    Write-Verbose "Attempting to copy results from $ServerName."
-                    if($isExchangeServer) {
-                        $serverResult = $serverResult.Replace(":","$")
-                        $serverResult = "\\$serverName\$serverResult"
-                    }
-                    $params.Add("Path",$serverResult) | Out-Null
-                    Copy-Item @params
-                    ## Check if the results were found
-                    if(Get-Item $OutputPath\$NetBIOSName* -ErrorAction Ignore) {
-                        Write-Verbose "Results from $ServerName were received."
-                        $foundCount++
-                        Write-Verbose "Attempting to remove scheduled task from $($serverName)."
-                        Invoke-ScriptBlockHandler -ScriptBlock {Unregister-ScheduledTask -TaskName ExchangeServerDiscovery -Confirm:$False} -ComputerName $serverName -Credential $creds -IsExchangeServer $isExchangeServer
-                        Remove-PSSession -Name ServerResults -ErrorAction Ignore -Confirm:$False
+                Write-Verbose "Checking if Exchange server discovery completed on $($serverName)."
+                #Check the event log to see if data collection completed
+                $EndTime = Get-Date
+                $TimeSpanMinutes = (New-TimeSpan -Start ($EndTime) -End $ServerStart).Minutes
+                $TimeSpanHours = (New-TimeSpan -Start ($EndTime) -End $ServerStart).Hours
+                $TimeSpan = ($TimeSpanHours*60) + $TimeSpanMinutes
+                $serverCompleted = Invoke-ScriptBlockHandler -ScriptBlock {param($NumberOfMinutes);Get-EventLog -LogName Application -Source "MSExchange ADAccess" -InstanceId 1376 -After (Get-Date -Date (Get-Date).AddMinutes($NumberOfMinutes) -Format "M/d/yyyy HH:mm") -ErrorAction Ignore} -ComputerName $ServerName -Credential $creds -ArgumentList $TimeSpan
+                if($serverCompleted -notlike $null) {
+                    #Now look for the results zip file
+                    $serverResult = Invoke-ScriptBlockHandler -ScriptBlock {$serverFile = (Get-Item "$env:ExchangeInstallPath\Logging\SfMC Discovery\$env:COMPUTERNAME*.zip").FullName; return $serverFile} -ComputerName $serverName -Credential $creds -IsExchangeServer $isExchangeServer
+                    if($serverResult -notlike $null) {
+                        Write-Verbose "Attempting to copy results from $ServerName."
+                        if($isExchangeServer) {
+                            $serverResult = $serverResult.Replace(":","$")
+                            $serverResult = "\\$serverName\$serverResult"
+                        }
+                        $params.Add("Path",$serverResult) | Out-Null
+                        Copy-Item @params
+                        #Check if the results were downloaded
+                        if(Get-Item $OutputPath\$NetBIOSName* -ErrorAction Ignore) {
+                            Write-Verbose "Results from $ServerName were received."
+                            $foundCount++
+                            Write-Verbose "Attempting to remove scheduled task from $($serverName)."
+                            Invoke-ScriptBlockHandler -ScriptBlock {Unregister-ScheduledTask -TaskName ExchangeServerDiscovery -Confirm:$False} -ComputerName $serverName -Credential $creds -IsExchangeServer $isExchangeServer
+                            Remove-PSSession -Name ServerResults -ErrorAction Ignore -Confirm:$False
+                        }
+                        else {
+                            Write-Verbose "Failed to copy results from $ServerName."
+                            $CustomObject | Add-Member -MemberType NoteProperty -Name "ServerName" -Value $s.ServerName -Force
+                            $CustomObject | Add-Member -MemberType NoteProperty -Name "ExchInstallPath" -Value $s.ExchInstallPath -Force
+                            $ServersNotFound.Add($CustomObject) | Out-Null
+                        }
                     }
                     else {
-                        Write-Verbose "Failed to copy results from $ServerName."
-                        $CustomObject | Add-Member -MemberType NoteProperty -Name "ServerName" -Value $s.ServerName -Force
-                        $CustomObject | Add-Member -MemberType NoteProperty -Name "ExchInstallPath" -Value $s.ExchInstallPath -Force
-                        $ServersNotFound.Add($CustomObject) | Out-Null
+                        Write-Verbose "Results not found on $ServerName."
                     }
                 }
                 ## Add server to array to check again
                 else {
-                    Write-Verbose "Results from $ServerName were not found. Adding to retry list."
+                    Write-Verbose "Script has not completed on $ServerName. Adding to retry list."
                     $CustomObject | Add-Member -MemberType NoteProperty -Name "ServerName" -Value $s.ServerName -Force
                     $CustomObject | Add-Member -MemberType NoteProperty -Name "ExchInstallPath" -Value $s.ExchInstallPath -Force
                     $ServersNotFound.Add($CustomObject) | Out-Null
@@ -944,42 +1025,42 @@ Write-host " "
 Start-Cleanup
 
 # SIG # Begin signature block
-# MIInwQYJKoZIhvcNAQcCoIInsjCCJ64CAQExDzANBglghkgBZQMEAgEFADB5Bgor
+# MIInxAYJKoZIhvcNAQcCoIIntTCCJ7ECAQExDzANBglghkgBZQMEAgEFADB5Bgor
 # BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
-# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCBVS4VGKVWASXEv
-# wWR7zkggQ/8dFhJ1vWjD35fe4z2YgKCCDXYwggX0MIID3KADAgECAhMzAAACy7d1
-# OfsCcUI2AAAAAALLMA0GCSqGSIb3DQEBCwUAMH4xCzAJBgNVBAYTAlVTMRMwEQYD
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCDYiYrf1byT+vNk
+# syGJpAGaXujeZnPxFVZWnpV6atmSz6CCDXYwggX0MIID3KADAgECAhMzAAADTrU8
+# esGEb+srAAAAAANOMA0GCSqGSIb3DQEBCwUAMH4xCzAJBgNVBAYTAlVTMRMwEQYD
 # VQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVNaWNy
 # b3NvZnQgQ29ycG9yYXRpb24xKDAmBgNVBAMTH01pY3Jvc29mdCBDb2RlIFNpZ25p
-# bmcgUENBIDIwMTEwHhcNMjIwNTEyMjA0NTU5WhcNMjMwNTExMjA0NTU5WjB0MQsw
+# bmcgUENBIDIwMTEwHhcNMjMwMzE2MTg0MzI5WhcNMjQwMzE0MTg0MzI5WjB0MQsw
 # CQYDVQQGEwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9u
 # ZDEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMR4wHAYDVQQDExVNaWNy
 # b3NvZnQgQ29ycG9yYXRpb24wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIB
-# AQC3sN0WcdGpGXPZIb5iNfFB0xZ8rnJvYnxD6Uf2BHXglpbTEfoe+mO//oLWkRxA
-# wppditsSVOD0oglKbtnh9Wp2DARLcxbGaW4YanOWSB1LyLRpHnnQ5POlh2U5trg4
-# 3gQjvlNZlQB3lL+zrPtbNvMA7E0Wkmo+Z6YFnsf7aek+KGzaGboAeFO4uKZjQXY5
-# RmMzE70Bwaz7hvA05jDURdRKH0i/1yK96TDuP7JyRFLOvA3UXNWz00R9w7ppMDcN
-# lXtrmbPigv3xE9FfpfmJRtiOZQKd73K72Wujmj6/Su3+DBTpOq7NgdntW2lJfX3X
-# a6oe4F9Pk9xRhkwHsk7Ju9E/AgMBAAGjggFzMIIBbzAfBgNVHSUEGDAWBgorBgEE
-# AYI3TAgBBggrBgEFBQcDAzAdBgNVHQ4EFgQUrg/nt/gj+BBLd1jZWYhok7v5/w4w
+# AQDdCKiNI6IBFWuvJUmf6WdOJqZmIwYs5G7AJD5UbcL6tsC+EBPDbr36pFGo1bsU
+# p53nRyFYnncoMg8FK0d8jLlw0lgexDDr7gicf2zOBFWqfv/nSLwzJFNP5W03DF/1
+# 1oZ12rSFqGlm+O46cRjTDFBpMRCZZGddZlRBjivby0eI1VgTD1TvAdfBYQe82fhm
+# WQkYR/lWmAK+vW/1+bO7jHaxXTNCxLIBW07F8PBjUcwFxxyfbe2mHB4h1L4U0Ofa
+# +HX/aREQ7SqYZz59sXM2ySOfvYyIjnqSO80NGBaz5DvzIG88J0+BNhOu2jl6Dfcq
+# jYQs1H/PMSQIK6E7lXDXSpXzAgMBAAGjggFzMIIBbzAfBgNVHSUEGDAWBgorBgEE
+# AYI3TAgBBggrBgEFBQcDAzAdBgNVHQ4EFgQUnMc7Zn/ukKBsBiWkwdNfsN5pdwAw
 # RQYDVR0RBD4wPKQ6MDgxHjAcBgNVBAsTFU1pY3Jvc29mdCBDb3Jwb3JhdGlvbjEW
-# MBQGA1UEBRMNMjMwMDEyKzQ3MDUyODAfBgNVHSMEGDAWgBRIbmTlUAXTgqoXNzci
+# MBQGA1UEBRMNMjMwMDEyKzUwMDUxNjAfBgNVHSMEGDAWgBRIbmTlUAXTgqoXNzci
 # tW2oynUClTBUBgNVHR8ETTBLMEmgR6BFhkNodHRwOi8vd3d3Lm1pY3Jvc29mdC5j
 # b20vcGtpb3BzL2NybC9NaWNDb2RTaWdQQ0EyMDExXzIwMTEtMDctMDguY3JsMGEG
 # CCsGAQUFBwEBBFUwUzBRBggrBgEFBQcwAoZFaHR0cDovL3d3dy5taWNyb3NvZnQu
 # Y29tL3BraW9wcy9jZXJ0cy9NaWNDb2RTaWdQQ0EyMDExXzIwMTEtMDctMDguY3J0
-# MAwGA1UdEwEB/wQCMAAwDQYJKoZIhvcNAQELBQADggIBAJL5t6pVjIRlQ8j4dAFJ
-# ZnMke3rRHeQDOPFxswM47HRvgQa2E1jea2aYiMk1WmdqWnYw1bal4IzRlSVf4czf
-# zx2vjOIOiaGllW2ByHkfKApngOzJmAQ8F15xSHPRvNMmvpC3PFLvKMf3y5SyPJxh
-# 922TTq0q5epJv1SgZDWlUlHL/Ex1nX8kzBRhHvc6D6F5la+oAO4A3o/ZC05OOgm4
-# EJxZP9MqUi5iid2dw4Jg/HvtDpCcLj1GLIhCDaebKegajCJlMhhxnDXrGFLJfX8j
-# 7k7LUvrZDsQniJZ3D66K+3SZTLhvwK7dMGVFuUUJUfDifrlCTjKG9mxsPDllfyck
-# 4zGnRZv8Jw9RgE1zAghnU14L0vVUNOzi/4bE7wIsiRyIcCcVoXRneBA3n/frLXvd
-# jDsbb2lpGu78+s1zbO5N0bhHWq4j5WMutrspBxEhqG2PSBjC5Ypi+jhtfu3+x76N
-# mBvsyKuxx9+Hm/ALnlzKxr4KyMR3/z4IRMzA1QyppNk65Ui+jB14g+w4vole33M1
-# pVqVckrmSebUkmjnCshCiH12IFgHZF7gRwE4YZrJ7QjxZeoZqHaKsQLRMp653beB
-# fHfeva9zJPhBSdVcCW7x9q0c2HVPLJHX9YCUU714I+qtLpDGrdbZxD9mikPqL/To
-# /1lDZ0ch8FtePhME7houuoPcMIIHejCCBWKgAwIBAgIKYQ6Q0gAAAAAAAzANBgkq
+# MAwGA1UdEwEB/wQCMAAwDQYJKoZIhvcNAQELBQADggIBAD21v9pHoLdBSNlFAjmk
+# mx4XxOZAPsVxxXbDyQv1+kGDe9XpgBnT1lXnx7JDpFMKBwAyIwdInmvhK9pGBa31
+# TyeL3p7R2s0L8SABPPRJHAEk4NHpBXxHjm4TKjezAbSqqbgsy10Y7KApy+9UrKa2
+# kGmsuASsk95PVm5vem7OmTs42vm0BJUU+JPQLg8Y/sdj3TtSfLYYZAaJwTAIgi7d
+# hzn5hatLo7Dhz+4T+MrFd+6LUa2U3zr97QwzDthx+RP9/RZnur4inzSQsG5DCVIM
+# pA1l2NWEA3KAca0tI2l6hQNYsaKL1kefdfHCrPxEry8onJjyGGv9YKoLv6AOO7Oh
+# JEmbQlz/xksYG2N/JSOJ+QqYpGTEuYFYVWain7He6jgb41JbpOGKDdE/b+V2q/gX
+# UgFe2gdwTpCDsvh8SMRoq1/BNXcr7iTAU38Vgr83iVtPYmFhZOVM0ULp/kKTVoir
+# IpP2KCxT4OekOctt8grYnhJ16QMjmMv5o53hjNFXOxigkQWYzUO+6w50g0FAeFa8
+# 5ugCCB6lXEk21FFB1FdIHpjSQf+LP/W2OV/HfhC3uTPgKbRtXo83TZYEudooyZ/A
+# Vu08sibZ3MkGOJORLERNwKm2G7oqdOv4Qj8Z0JrGgMzj46NFKAxkLSpE5oHQYP1H
+# tPx1lPfD7iNSbJsP6LiUHXH1MIIHejCCBWKgAwIBAgIKYQ6Q0gAAAAAAAzANBgkq
 # hkiG9w0BAQsFADCBiDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCldhc2hpbmd0b24x
 # EDAOBgNVBAcTB1JlZG1vbmQxHjAcBgNVBAoTFU1pY3Jvc29mdCBDb3Jwb3JhdGlv
 # bjEyMDAGA1UEAxMpTWljcm9zb2Z0IFJvb3QgQ2VydGlmaWNhdGUgQXV0aG9yaXR5
@@ -1019,67 +1100,67 @@ Start-Cleanup
 # XJbYANahRr1Z85elCUtIEJmAH9AAKcWxm6U/RXceNcbSoqKfenoi+kiVH6v7RyOA
 # 9Z74v2u3S5fi63V4GuzqN5l5GEv/1rMjaHXmr/r8i+sLgOppO6/8MO0ETI7f33Vt
 # Y5E90Z1WTk+/gFcioXgRMiF670EKsT/7qMykXcGhiJtXcVZOSEXAQsmbdlsKgEhr
-# /Xmfwb1tbWrJUnMTDXpQzTGCGaEwghmdAgEBMIGVMH4xCzAJBgNVBAYTAlVTMRMw
+# /Xmfwb1tbWrJUnMTDXpQzTGCGaQwghmgAgEBMIGVMH4xCzAJBgNVBAYTAlVTMRMw
 # EQYDVQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVN
 # aWNyb3NvZnQgQ29ycG9yYXRpb24xKDAmBgNVBAMTH01pY3Jvc29mdCBDb2RlIFNp
-# Z25pbmcgUENBIDIwMTECEzMAAALLt3U5+wJxQjYAAAAAAsswDQYJYIZIAWUDBAIB
+# Z25pbmcgUENBIDIwMTECEzMAAANOtTx6wYRv6ysAAAAAA04wDQYJYIZIAWUDBAIB
 # BQCggbAwGQYJKoZIhvcNAQkDMQwGCisGAQQBgjcCAQQwHAYKKwYBBAGCNwIBCzEO
-# MAwGCisGAQQBgjcCARUwLwYJKoZIhvcNAQkEMSIEICEFZbJ8r+rzXXMaIR2xiXt2
-# I3NG845I9kTt0ZtqlhhaMEQGCisGAQQBgjcCAQwxNjA0oBSAEgBNAGkAYwByAG8A
+# MAwGCisGAQQBgjcCARUwLwYJKoZIhvcNAQkEMSIEIGXdD2gOfizUCtiigCYlmrKN
+# MjKZNfcFFOyi3exnJadYMEQGCisGAQQBgjcCAQwxNjA0oBSAEgBNAGkAYwByAG8A
 # cwBvAGYAdKEcgBpodHRwczovL3d3dy5taWNyb3NvZnQuY29tIDANBgkqhkiG9w0B
-# AQEFAASCAQAkwx6jO1dOTQz1O9rkgGDFhKBA1wiNnUgOAVViyC3GsWdG6nrTfUn2
-# wvI/MOzOa1tb13bxToxv9tzJ74LivgSWBwmilZtyQ+H1PgtvrppY19W+/2bQkA4U
-# sfDSYCSHhkCvmyS6gFJpvACDkn02s95AJyibuq4IslHgXk7Aidf21e/2VBYpcJzq
-# Ilj4l+3PkQ9CC1GA6uLa488RkLDBo/jRYmKePuALXbtexLUL4a5lKTuR4rqTCMlO
-# zvb3Fpvk5nWwUkSlNWozz9Hbs7nHMKlZTqgDapUBRfEKrELNFBnMFQCYxOA05Kb7
-# wOnlvQBoBalEsdQVX2Rq5eRWZy9GWJJsoYIXKTCCFyUGCisGAQQBgjcDAwExghcV
-# MIIXEQYJKoZIhvcNAQcCoIIXAjCCFv4CAQMxDzANBglghkgBZQMEAgEFADCCAVkG
+# AQEFAASCAQAzHPYvLrOJYBt8C4BoIqpXcQPg4GSvnXKyNl3MKMGS74EgREPZM6L9
+# pdW1eab0GZ2CJIsEr3KQn73cHzmb2oCS0XQICun3WjsZFRiX0n75VisOUbIT643x
+# StQCtR/XlmR8vnvdbL3RunV32u6O+h6rmTnUFeOJ5y1xdNciHblSUJCNA713+lbw
+# YO68XfJEjliNxZktgZ6DMEFLfjazqday6R/jIkGiUXv/Nx4+t9LH7XMSoO/ZDxZU
+# givHI+K2J3gged2gVb4PAiPZrMpKiUNPDWlXt+4x1vuZQlmCvxFP75rJvcUOdQC5
+# KlhJtfhznCOPZEaI6uyRIjiqCFl8ooIkoYIXLDCCFygGCisGAQQBgjcDAwExghcY
+# MIIXFAYJKoZIhvcNAQcCoIIXBTCCFwECAQMxDzANBglghkgBZQMEAgEFADCCAVkG
 # CyqGSIb3DQEJEAEEoIIBSASCAUQwggFAAgEBBgorBgEEAYRZCgMBMDEwDQYJYIZI
-# AWUDBAIBBQAEIHLjHsNp/oZWy/2DIhK1ih84ZzwHco//3h0g0AqI+Fh5AgZjdM2+
-# b8cYEzIwMjIxMTE4MjA1MDA1LjcxOVowBIACAfSggdikgdUwgdIxCzAJBgNVBAYT
+# AWUDBAIBBQAEIBrI8PN+2fi7rZTu+UcY6Ape4P4WbRa+TfWS+Nlu1+0yAgZkP9Rm
+# 8YQYEzIwMjMwNTEwMTUwMDE0Ljg1M1owBIACAfSggdikgdUwgdIxCzAJBgNVBAYT
 # AlVTMRMwEQYDVQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYD
 # VQQKExVNaWNyb3NvZnQgQ29ycG9yYXRpb24xLTArBgNVBAsTJE1pY3Jvc29mdCBJ
 # cmVsYW5kIE9wZXJhdGlvbnMgTGltaXRlZDEmMCQGA1UECxMdVGhhbGVzIFRTUyBF
-# U046MkFENC00QjkyLUZBMDExJTAjBgNVBAMTHE1pY3Jvc29mdCBUaW1lLVN0YW1w
-# IFNlcnZpY2WgghF4MIIHJzCCBQ+gAwIBAgITMwAAAbHKkEPuC/ADqwABAAABsTAN
+# U046M0JENC00QjgwLTY5QzMxJTAjBgNVBAMTHE1pY3Jvc29mdCBUaW1lLVN0YW1w
+# IFNlcnZpY2WgghF7MIIHJzCCBQ+gAwIBAgITMwAAAbT7gAhEBdIt+gABAAABtDAN
 # BgkqhkiG9w0BAQsFADB8MQswCQYDVQQGEwJVUzETMBEGA1UECBMKV2FzaGluZ3Rv
 # bjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0
 # aW9uMSYwJAYDVQQDEx1NaWNyb3NvZnQgVGltZS1TdGFtcCBQQ0EgMjAxMDAeFw0y
-# MjA5MjAyMDIxNTlaFw0yMzEyMTQyMDIxNTlaMIHSMQswCQYDVQQGEwJVUzETMBEG
+# MjA5MjAyMDIyMDlaFw0yMzEyMTQyMDIyMDlaMIHSMQswCQYDVQQGEwJVUzETMBEG
 # A1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwGA1UEChMVTWlj
 # cm9zb2Z0IENvcnBvcmF0aW9uMS0wKwYDVQQLEyRNaWNyb3NvZnQgSXJlbGFuZCBP
-# cGVyYXRpb25zIExpbWl0ZWQxJjAkBgNVBAsTHVRoYWxlcyBUU1MgRVNOOjJBRDQt
-# NEI5Mi1GQTAxMSUwIwYDVQQDExxNaWNyb3NvZnQgVGltZS1TdGFtcCBTZXJ2aWNl
-# MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAhqKrPtXsG8fsg4w8R4Mz
-# ZTAKkzwvEBQ94ntS+72rRGIMF0GCyEL9IOt7f9gkGoamfbtrtdY4y+KIFR8w19/n
-# U3EoWhJfrYamrfpgtFmTaE3XCKCsI7rnrPmlVOMmndDyN1gAlfeu4l5rdxx9ODEC
-# BPdS/+w/jDT7JkBhrYllqVXcwGAgWLdXAoUDgKVByv5XhKkbOrPx9qppuZjKm4nf
-# lmfwb/bTWkA3aMMQ67tBoMLSsbIN3BJNWZdwczjoQVXo3YXr2fB+PYNmHviCcDUM
-# Hs0Vxmf7i/WSpBafsDMEn6WY7G8qtRGVX+7X0zDVg/7NVDLMqfn/iv++5hJGP+2F
-# mv4WZkBS1MBpwvOi4EQ25pIG45jWTffR4ynyed1I1SxSOP+efuBx0WrN1A250lv5
-# fGZHCL0vCMDT/w+U6wpNnxfDoQRY9Ut82iNK5alkxNozPP/DNI+nknTaSliaR2Xn
-# SXDIZEs7lfuJYg0qahfJJ1CZF2IYxOS9FK1crEigSb8QnEJoj6ThLf4FYpYLTsRX
-# lPdQbvBsVvgt++BttooznwfK0DKMOc718SLS+unwkVO0aF23CEQSStoy0ZW34K+c
-# bRmUfia+k9E+4luoTnT17oKqYfDNO5Rk8UwVa8mfh8+/R3fZaz2O/ZhiYT/RZHV9
-# Quz5PHGlaCfXPQ8A6zFJlE8CAwEAAaOCAUkwggFFMB0GA1UdDgQWBBT0m2eR7w2t
-# hIr18WehUTSmvQ45kzAfBgNVHSMEGDAWgBSfpxVdAF5iXYP05dJlpxtTNRnpcjBf
+# cGVyYXRpb25zIExpbWl0ZWQxJjAkBgNVBAsTHVRoYWxlcyBUU1MgRVNOOjNCRDQt
+# NEI4MC02OUMzMSUwIwYDVQQDExxNaWNyb3NvZnQgVGltZS1TdGFtcCBTZXJ2aWNl
+# MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAtEemnmUHMkIfvOiu27K8
+# 6ZbwWhksGwV72Dl1uGdqr2pKm+mfzoT+Yngkq9aLEf+XDtADyA+2KIZU0iO8WG79
+# eJjzz29flZpBKbKg8xl2P3O9drleuQw3TnNfNN4+QIgjMXpE3txPF7M7IRLKZMiO
+# t3FfkFWVmiXJAA7E3OIwJgphg09th3Tvzp8MT8+HOtG3bdrRd/y2u8VrQsQTLZiV
+# wTZ6qDYKNT8PQZl7xFrSSO3QzXa91LipZnYOl3siGJDCee1Ba7X1i13dQFHxKl5F
+# f4JzDduOBZ85e2VrpyFy1a3ayGUzBrIw59jhMbjIw9YVcQt9kUWntyCmNk15WybC
+# S+hXpEDDLVj1X5W9snmoW1qu03+unprQjWQaVuO7BfcvQdNVdyKSqAeKy1eT2Hcc
+# 5n1aAVeXFm6sbVJmZzPQEQR3Jr7W8YcTjkqC5hT2qrYuIcYGOf3Pj4OqdXm1Qqhu
+# wtskxviv7yy3Z+PxJpxKx+2e6zGRaoQmIlLfg/a42XNVHTf6Wzr5k7Q1w7v0uA/s
+# FsgyKmI7HzKHX08xDDSmJooXA5btD6B0lx/Lqs6Qb4KthnA7N2IEdJ5sjMIhyHZw
+# Br7fzDskU/+Sgp2UnfqrN1Vda/gb+pmlbJwi8MphvElYzjT7PZK2Dm4eorcjx7T2
+# QVe3EIelLuGbxzybblZoRTkCAwEAAaOCAUkwggFFMB0GA1UdDgQWBBTLRIXl8ZS4
+# Opy7Eii3Tt44zDLZfjAfBgNVHSMEGDAWgBSfpxVdAF5iXYP05dJlpxtTNRnpcjBf
 # BgNVHR8EWDBWMFSgUqBQhk5odHRwOi8vd3d3Lm1pY3Jvc29mdC5jb20vcGtpb3Bz
 # L2NybC9NaWNyb3NvZnQlMjBUaW1lLVN0YW1wJTIwUENBJTIwMjAxMCgxKS5jcmww
 # bAYIKwYBBQUHAQEEYDBeMFwGCCsGAQUFBzAChlBodHRwOi8vd3d3Lm1pY3Jvc29m
 # dC5jb20vcGtpb3BzL2NlcnRzL01pY3Jvc29mdCUyMFRpbWUtU3RhbXAlMjBQQ0El
 # MjAyMDEwKDEpLmNydDAMBgNVHRMBAf8EAjAAMBYGA1UdJQEB/wQMMAoGCCsGAQUF
-# BwMIMA4GA1UdDwEB/wQEAwIHgDANBgkqhkiG9w0BAQsFAAOCAgEA2Oc3kmql5VKE
-# itAhoBCc1U6/VwMSYKQPqhC59f00Y5fbwnD+B2Qa0wnJqADSVVu6bBCVrks+EGbk
-# uMhRb/lpiHNKVnuXF4PKTDnvCnYCqgwAmbttdxe0m38fJpGU3fmECEFX4OYacEhF
-# wTkLZtIUVjdqwPnQpRII+YqX/Q0Vp096g2puPllSdrxUB8xIOx3F7LGOzyv/1Wmr
-# LyWAhUGpGte0W3qfX4YWkn7YCM+yl887tj5j+jO/l1MRi6bl4MsN0PW2FCYeRbyz
-# QEENsg5Pd351Z08ROR/nR8z+cAuQwR29ijaDKIms5IbRr1nZL/qZskFSuCuSA+nY
-# eMuTJxHg2HCXrt6ECFbEkYoPaBGTzxPYopcuJEcChhNlWkduCRguykEsmz0LvtmS
-# 7Fe68g4Zoh3sQkIE5VEwnKC3HwVemhK7eNYR1q7RYExfGFUDMQdO7tQpbcPD4oaB
-# btFGWGu3nz1IryWs9K88zo8+eoQV/o9SxNU7Rs6TMqcLdM6C6LgmGVaWKKC0S2DV
-# KU8zFx0y5z25h1ZJ7X/Zhaav1mtXVG6+lJIq8ktJgOU5/pomumdftgosxGjIp3NO
-# Ry9fDUll+KQl4YmN9GzZxPYkhuI0QYriLmytBtUK+AK91hURVldVbUjP8sksr1ds
-# iQwyOYQIkSxrTuhp0pw7h5329jphgEYwggdxMIIFWaADAgECAhMzAAAAFcXna54C
+# BwMIMA4GA1UdDwEB/wQEAwIHgDANBgkqhkiG9w0BAQsFAAOCAgEAEtEPBYwpt4Ji
+# oSq0joGzwqYX6SoNH7YbqpgArdlnrdt6u3ukKREluKEVqS2XajXxx0UkXGc4Xi9d
+# p2bSxpuyQnTkq+IQwkg7p1dKrwAa2vdmaNzz3mrSaeUEu40yCThHwquQkweoG4eq
+# RRZe19OtVSmDDNC3ZQ6Ig0qz79vivXgy5dFWk4npxA5LxSGR4wBaXaIuVhoEa06v
+# d/9/2YsQ99bCiR7SxJRt1XrQ5kJGHUi0Fhgz158qvXgfmq7qNqfqfTSmsQRrtbe4
+# Zv/X+qPo/l6ae+SrLkcjRfr0ONV0vFVuNKx6Cb90D5LgNpc9x8V/qIHEr+JXbWXW
+# 6mARVVqNQCmXlVHjTBjhcXwSmadR1OotcN/sKp2EOM9JPYr86O9Y/JAZC9zug9ql
+# jKTroZTfYA7LIdcmPr69u1FSD/6ivL6HRHZd/k2EL7FtZwzNcRRdFF/VgpkOxHIf
+# qvjXambwoMoT+vtGTtqgoruhhSk0bM1F/pBpi/nPZtVNLGTNaK8Wt6kscbC9G6f0
+# 9gz/wBBJOBmvTLPOOT/3taCGSoJoDABWnK+De5pie4KX8BxxKQbJvxz7vRsVJ5R6
+# mGx+Bvav5AjsxvZZw6eQmkI0vPRckxL9TCVCfWS0uyIKmyo6TdosnbBO/osre7r0
+# jS9AH8spEqVlhFcpQNfOg/CvdS2xNVMwggdxMIIFWaADAgECAhMzAAAAFcXna54C
 # m0mZAAAAAAAVMA0GCSqGSIb3DQEBCwUAMIGIMQswCQYDVQQGEwJVUzETMBEGA1UE
 # CBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwGA1UEChMVTWljcm9z
 # b2Z0IENvcnBvcmF0aW9uMTIwMAYDVQQDEylNaWNyb3NvZnQgUm9vdCBDZXJ0aWZp
@@ -1119,42 +1200,42 @@ Start-Cleanup
 # VAmxaQFEfnyhYWxz/gq77EFmPWn9y8FBSX5+k77L+DvktxW/tM4+pTFRhLy/AsGC
 # onsXHRWJjXD+57XQKBqJC4822rpM+Zv/Cuk0+CQ1ZyvgDbjmjJnW4SLq8CdCPSWU
 # 5nR0W2rRnj7tfqAxM328y+l7vzhwRNGQ8cirOoo6CGJ/2XBjU02N7oJtpQUQwXEG
-# ahC0HVUzWLOhcGbyoYIC1DCCAj0CAQEwggEAoYHYpIHVMIHSMQswCQYDVQQGEwJV
+# ahC0HVUzWLOhcGbyoYIC1zCCAkACAQEwggEAoYHYpIHVMIHSMQswCQYDVQQGEwJV
 # UzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwGA1UE
 # ChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMS0wKwYDVQQLEyRNaWNyb3NvZnQgSXJl
 # bGFuZCBPcGVyYXRpb25zIExpbWl0ZWQxJjAkBgNVBAsTHVRoYWxlcyBUU1MgRVNO
-# OjJBRDQtNEI5Mi1GQTAxMSUwIwYDVQQDExxNaWNyb3NvZnQgVGltZS1TdGFtcCBT
-# ZXJ2aWNloiMKAQEwBwYFKw4DAhoDFQDtZLG+pANsDu/LLr1OfTA/kEbHK6CBgzCB
+# OjNCRDQtNEI4MC02OUMzMSUwIwYDVQQDExxNaWNyb3NvZnQgVGltZS1TdGFtcCBT
+# ZXJ2aWNloiMKAQEwBwYFKw4DAhoDFQBlnNiQ85uX9nN4KRJt/gHkJx4JCKCBgzCB
 # gKR+MHwxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQH
 # EwdSZWRtb25kMR4wHAYDVQQKExVNaWNyb3NvZnQgQ29ycG9yYXRpb24xJjAkBgNV
 # BAMTHU1pY3Jvc29mdCBUaW1lLVN0YW1wIFBDQSAyMDEwMA0GCSqGSIb3DQEBBQUA
-# AgUA5yHvHTAiGA8yMDIyMTExODE5NDYzN1oYDzIwMjIxMTE5MTk0NjM3WjB0MDoG
-# CisGAQQBhFkKBAExLDAqMAoCBQDnIe8dAgEAMAcCAQACAhMbMAcCAQACAhFPMAoC
-# BQDnI0CdAgEAMDYGCisGAQQBhFkKBAIxKDAmMAwGCisGAQQBhFkKAwKgCjAIAgEA
-# AgMHoSChCjAIAgEAAgMBhqAwDQYJKoZIhvcNAQEFBQADgYEACGAuESCl8C9hSCFw
-# uCmxkwqQMA864JWYtH7k0Tfme484ZKfAQ6L91Y/PXYPxQHkyI1dlWKWBP5CMR5ON
-# Xz4liz2wt6g6mPN4P2dt6J4L5clbPG2EFw0/wn0vrrKv93ruZWQh/3HTihtHjfF8
-# vlY91WpbapAUS+wS4LSRcr/jQJQxggQNMIIECQIBATCBkzB8MQswCQYDVQQGEwJV
-# UzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwGA1UE
-# ChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMSYwJAYDVQQDEx1NaWNyb3NvZnQgVGlt
-# ZS1TdGFtcCBQQ0EgMjAxMAITMwAAAbHKkEPuC/ADqwABAAABsTANBglghkgBZQME
-# AgEFAKCCAUowGgYJKoZIhvcNAQkDMQ0GCyqGSIb3DQEJEAEEMC8GCSqGSIb3DQEJ
-# BDEiBCA4yq2S4RfFL32Nh3VMb5m4KnjhWrGZuKhn3jtgwrbRQDCB+gYLKoZIhvcN
-# AQkQAi8xgeowgecwgeQwgb0EIIPtDYsUW9+p4OjL2Cm7fm3p1h6usM7RwxOU4iib
-# NM9sMIGYMIGApH4wfDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCldhc2hpbmd0b24x
-# EDAOBgNVBAcTB1JlZG1vbmQxHjAcBgNVBAoTFU1pY3Jvc29mdCBDb3Jwb3JhdGlv
-# bjEmMCQGA1UEAxMdTWljcm9zb2Z0IFRpbWUtU3RhbXAgUENBIDIwMTACEzMAAAGx
-# ypBD7gvwA6sAAQAAAbEwIgQgURH8lTINxRNs6wKM4DuHbgnbd0VFGUKLqvTGMeeZ
-# hXQwDQYJKoZIhvcNAQELBQAEggIAHRpiw3BipRMMRe4HK5AqW3RwrsgeZ14Cyz52
-# 33U9G7cC7L5gE+Fba1zBKhMwQeB6sJgy0quhPxarnH3sGI+5pzgRmEZrsQBoeckb
-# IJgpLTQC8eUMyUxwgSDKu/AAAfM03bxOSfoSuEZwOr1uik3LqiYZeDYbuB1OvA6+
-# Lg21wseo2MQdHT1r7Ud2z3kV6lH5kFM8iJkOuvuGqLPeKnRR/O5D6bG+P4sHaely
-# 2+p+Ho+Zk86OR2i9ABJoeJ3g/Z17s7GlTQ18QcTAEKjinI7NMhq7yuEpBjoBVVlt
-# EYZ+IywXffm6J5gq4BwuFUTVUL3eGp5UsPvbQgE93MTKQpyRf8EHMLYc6aMZVHV3
-# 5RSAWLmIr2hnpP3BsOXMzKWseE4JB4QfaMOWAN0HzZXAIId0aUI6LljVaaSsPbUd
-# k047ttsku/MRhEcUelVGjys+ME+7b5KKW3iMCQLfj1pPuC4WFw0MZ0WfTlBrSJvb
-# 0XHN8pIAGhvtBxt2bjXnj4kdXAofFRsZGz1Lmyp6V0Rfn4mR/Dane3YstX2YzQa5
-# hemi9zdSKRHj24VZm4gqXJSWZIlH9PuRhlQey9OOVD3Cq46QzDXFNIhK0fHzfAIR
-# ugYIY2fqWU66eIsh+Z2wtQr7mnZjba9u5SSD50C9/fjIYSVrc2FgQjlhyBcTLHcL
-# yXaqUnI=
+# AgUA6AYAgDAiGA8yMDIzMDUxMDE5MzczNloYDzIwMjMwNTExMTkzNzM2WjB3MD0G
+# CisGAQQBhFkKBAExLzAtMAoCBQDoBgCAAgEAMAoCAQACAg8yAgH/MAcCAQACAhU8
+# MAoCBQDoB1IAAgEAMDYGCisGAQQBhFkKBAIxKDAmMAwGCisGAQQBhFkKAwKgCjAI
+# AgEAAgMHoSChCjAIAgEAAgMBhqAwDQYJKoZIhvcNAQEFBQADgYEAVmrhJeu5F3jl
+# i36h9I3s6XSfN6q5Nrcl3SDVhgxvtuouUx5d4LnYTHo5dg8ITm7YnOmxRD5THoGp
+# plnPYw9RrJtA/vmGc5ahuBIFv1Ucn5EJUbN2JnU904QwR2Y4wi2LPrJl7600wQJn
+# cBBrGE0hWoDluC7fT5bJcHOsDLQxCosxggQNMIIECQIBATCBkzB8MQswCQYDVQQG
+# EwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwG
+# A1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMSYwJAYDVQQDEx1NaWNyb3NvZnQg
+# VGltZS1TdGFtcCBQQ0EgMjAxMAITMwAAAbT7gAhEBdIt+gABAAABtDANBglghkgB
+# ZQMEAgEFAKCCAUowGgYJKoZIhvcNAQkDMQ0GCyqGSIb3DQEJEAEEMC8GCSqGSIb3
+# DQEJBDEiBCBVZYt34RCtlJj1paET9+8RCfCaEZv8Q5xamhRkf96huTCB+gYLKoZI
+# hvcNAQkQAi8xgeowgecwgeQwgb0EINPI93vmozBwBlFxvfr/rElreFPR4ux7vXKx
+# 2ni3AfcGMIGYMIGApH4wfDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCldhc2hpbmd0
+# b24xEDAOBgNVBAcTB1JlZG1vbmQxHjAcBgNVBAoTFU1pY3Jvc29mdCBDb3Jwb3Jh
+# dGlvbjEmMCQGA1UEAxMdTWljcm9zb2Z0IFRpbWUtU3RhbXAgUENBIDIwMTACEzMA
+# AAG0+4AIRAXSLfoAAQAAAbQwIgQgdID9UoKqlj5lZ7wGBx+EI7yy2WHrRv8KJ7Gt
+# GU13+KwwDQYJKoZIhvcNAQELBQAEggIAUza97aYVWCYm5GqEcS/3Ire2nzV1vi1P
+# 52w73NyHflAyobbNQuB5uzXpcjWwg44ODW5l4JauT4OMQWFrWuJalqianNJ8uHyb
+# EWLMcUYGcDddHhcrND9iNV+dXTjy57IdUL4zhIC4Eh3LHzBmpcZXcednMDIIW3VR
+# T4r7MuYqv6ZXrW9IG57BFHMBfg6iK8isC6FfX4js5Ry4o4nB625uTMsqldNTnvJg
+# RVEoNKsE7s1WJfePSnyANHn8kyzfFgRQjsHe3rltsQJmV5ej6gUCh2rF2M2u2Hy0
+# 1ZtaocIDCwU/lNTJqDmRCvEAnMkDa3iRG3aXJiR4dk6jNt/PFiGhs66EQFzPKJ0s
+# ZR8jeM+5O/lD5QVw7YqMiYUCeE6oHXtVs131BQuoTr4FKNcvoo/xaMiBT0Ybbeei
+# mX4wpKIXdR3PhnMvrnR2hCCYRuf5Ym3uZhSbbpOHSEef7LKqE1OcAb/HqN2tYAVl
+# Y7U2UX0buvGwZt5lhYXErmZuTyepxc8ig3irTrieop6q5Jn6f5Ad94vUEKeTIq4F
+# vST1WkHqdbC7T9+E0BNEFg/4QIA1WvRJwqtkww9vu/9XcmEwjvBEfJ7oeg6nR7II
+# pAW906+K1XFOyDQtpETyB0KjbPpheh987c0WCQKgsiG7CrhS8Wm37b1VdWwJgKqa
+# 2/7UZhJO60c=
 # SIG # End signature block
